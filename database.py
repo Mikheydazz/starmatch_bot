@@ -536,6 +536,11 @@ def get_user_reports_details(self, user_id):
     
     return result
 
+def is_user_banned(self, user_id):
+        """Проверяет, заблокирован ли пользователь"""
+        self.cursor.execute('SELECT user_id FROM banned_users WHERE user_id = ?', (user_id,))
+        return self.cursor.fetchone() is not None
+
 def delete_reports_for_user(self, user_id):
     """Удаляет все жалобы на пользователя"""
     self.cursor.execute('DELETE FROM reports WHERE reported_user_id = ?', (user_id,))
