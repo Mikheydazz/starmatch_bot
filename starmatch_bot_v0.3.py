@@ -2,6 +2,7 @@ import telebot
 import time
 from telebot.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from telebot import types
+from telebot import apihelper
 from telebot.handler_backends import State, StatesGroup
 from telebot.custom_filters import StateFilter
 import random
@@ -1384,15 +1385,35 @@ def start_browsing(call: CallbackQuery):
     user_city = user_data.get("city") if user_data else None
     
     # Получаем список анкет (кроме своей) с фильтрами из БД
-    other_users = db.get_users_by_filters(
+    other_users = db.get_users_by_filters_safe(
         exclude_user_id=user_id,
         gender=None,
         zodiac=None,
         city_filter=None
     )
     
-    if not other_users:
-        bot.answer_callback_query(call.id, "😔 Пока нет других анкет")
+    # Фильтруем уже здесь заблокированных и скрытых
+    filtered_users = []
+    for user in other_users:
+        profile_id = user["user_id"]
+        
+        # Проверяем бан
+        if db.is_user_banned(profile_id):
+            continue
+        
+        # Проверяем скрытие
+        if db.is_profile_hidden(profile_id):
+            continue
+        
+        # Проверяем жалобы
+        report_count = db.get_report_count(profile_id)
+        if report_count >= REPORT_THRESHOLD:
+            continue
+        
+        filtered_users.append(user)
+    
+    if not filtered_users:
+        bot.answer_callback_query(call.id, "😔 Пока нет доступных анкет")
         return
     
     # Сортируем анкеты: сначала из того же города, потом остальные
@@ -1400,7 +1421,7 @@ def start_browsing(call: CallbackQuery):
         same_city_users = []
         other_city_users = []
         
-        for user in other_users:
+        for user in filtered_users:
             if user.get("city") == user_city:
                 same_city_users.append(user)
             else:
@@ -1410,10 +1431,10 @@ def start_browsing(call: CallbackQuery):
         random.shuffle(same_city_users)
         random.shuffle(other_city_users)
         
-        other_users = same_city_users + other_city_users
+        filtered_users = same_city_users + other_city_users
     else:
         # Если город не указан, просто перемешиваем все анкеты
-        random.shuffle(other_users)
+        random.shuffle(filtered_users)
     
     # Инициализируем очередь просмотра
     with temp_data_lock:
@@ -1421,7 +1442,7 @@ def start_browsing(call: CallbackQuery):
             temp_data[user_id] = {}
         
         # Сохраняем только ID пользователей в очереди
-        user_ids = [user["user_id"] for user in other_users]
+        user_ids = [user["user_id"] for user in filtered_users]
         temp_data[user_id]['browse_queue'] = user_ids.copy()
         temp_data[user_id]['current_index'] = 0
         temp_data[user_id]['filter_gender'] = None
@@ -1541,6 +1562,14 @@ def show_no_more_profiles(user_id, chat_id):
     
 def display_profile(user_id, chat_id, profile_id, user_data, current_idx, total_count):
     """Отображает анкету пользователя (всегда отправляет новое сообщение)"""
+    
+    # Проверяем, можно ли показывать эту анкету
+    if not should_show_profile(profile_id):
+        # Пропускаем эту анкету и показываем следующую
+        bot.send_message(chat_id, "⚠️ Эта анкета временно недоступна. Показываю следующую...")
+        show_next_profile(user_id, chat_id)
+        return
+    
     # Отмечаем, из одного ли города
     current_user_data = db.get_user(user_id)
     user_city = current_user_data.get("city") if current_user_data else None
@@ -1556,6 +1585,11 @@ def display_profile(user_id, chat_id, profile_id, user_data, current_idx, total_
         city_info = f"📍 *Город:* {profile_city}\n\n"
     
     # Проверяем, не заблокирована ли анкета
+    if db.is_user_banned(profile_id):
+        bot.send_message(chat_id, "⚠️ Эта анкета заблокирована. Показываю следующую...")
+        show_next_profile(user_id, chat_id)
+        return
+    
     report_count = db.get_report_count(profile_id)
     report_warning = ""
     
@@ -2515,6 +2549,35 @@ def get_channel_info_command(message: Message):
     except Exception as e:
         bot.reply_to(message, f"❌ Ошибка: {str(e)}")
 
+def should_show_profile(profile_id):
+    """Проверяет, можно ли показывать анкету (не заблокирована, не скрыта)"""
+    try:
+        # Проверяем бан
+        if db.is_user_banned(profile_id):
+            return False
+        
+        # Получаем данные пользователя
+        user_data = db.get_user(profile_id)
+        if not user_data:
+            return False
+        
+        # Проверяем скрытие профиля
+        is_hidden = db.is_profile_hidden(profile_id)
+        if is_hidden:
+            return False
+        
+        # Проверяем количество жалоб
+        report_count = db.get_report_count(profile_id)
+        if report_count >= REPORT_THRESHOLD:
+            # Если порог достигнут, анкета должна быть скрыта
+            db.hide_user_profile(profile_id)
+            return False
+            
+        return True
+    except Exception as e:
+        print(f"❌ Ошибка проверки профиля {profile_id}: {e}")
+        return True  # В случае ошибки показываем
+
 @bot.callback_query_handler(func=lambda call: call.data == "admin_stats")
 def admin_stats(call: CallbackQuery):
     """Статистика для админа"""
@@ -2611,10 +2674,12 @@ def admin_view_reports(call: CallbackQuery):
     response += f"📈 Всего жалоб: {len(reports)}\n\n"
     
     for idx, report in enumerate(reports[:10], 1):  # Показываем первые 10
-        reporter_name = escape_markdown(report['reporter_name'])
+        reporter_name = escape_markdown(report.get('reporter_name', 'Аноним'))
+        reporter_id = report.get('reporter_user_id', 'неизвестно')  # Изменено с reporter_id на reporter_user_id
+        
         response += (
             f"{idx}. *От:* {reporter_name}\n"
-            f"   🆔 `{report['reporter_id']}`\n"
+            f"   🆔 `{reporter_id}`\n"
         )
         
         if report.get('reason'):
@@ -2647,7 +2712,8 @@ def admin_view_reports(call: CallbackQuery):
             parse_mode="Markdown",
             reply_markup=keyboard
         )
-    except:
+    except Exception as e:
+        # Если не удалось отредактировать, отправляем новое сообщение
         bot.send_message(
             call.message.chat.id,
             response,
@@ -2775,6 +2841,9 @@ def handle_ban_reason(call: CallbackQuery):
     success = db.ban_user(target_user_id, reason_text, "admin")
     
     if success:
+        # Скрываем профиль
+        db.hide_user_profile(target_user_id)
+        
         # Уведомляем пользователя
         try:
             target_data = db.get_user(target_user_id)
@@ -2800,7 +2869,8 @@ def handle_ban_reason(call: CallbackQuery):
             call.message.chat.id,
             f"✅ *Пользователь заблокирован*\n\n"
             f"🆔 ID: `{target_user_id}`\n"
-            f"📝 Причина: {reason_text}",
+            f"📝 Причина: {reason_text}\n"
+            f"👁️ Профиль скрыт из общего просмотра",
             parse_mode="Markdown"
         )
     else:
@@ -3257,7 +3327,7 @@ def handle_report(call: CallbackQuery):
     
     reasons = [
         ("🚫 Мошенничество", "мошенничество"),
-        ("🔞 Неподходящий контент", "неподходящий контент"),
+        ("🔞 Неподходящий контент", "неподобающий контент"),
         ("📸 Не моя фотография", "не моя фотография"),
         ("🎭 Фейковый профиль", "фейковый профиль"),
         ("💬 Оскорбления", "оскорбления"),
@@ -3269,14 +3339,28 @@ def handle_report(call: CallbackQuery):
     for reason_text, reason_code in reasons:
         keyboard.add(InlineKeyboardButton(reason_text, callback_data=f"report_reason_{reason_code}"))
     
-    bot.edit_message_text(
-        f"🚫 *Пожаловаться на пользователя*\n\n"
-        f"Выберите причину жалобы:",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        parse_mode="Markdown",
-        reply_markup=keyboard
-    )
+    try:
+        # Пробуем редактировать сообщение (если оно содержит текст)
+        bot.edit_message_text(
+            f"🚫 *Пожаловаться на пользователя*\n\n"
+            f"Выберите причину жалобы:",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown",
+            reply_markup=keyboard
+        )
+    except telebot.apihelper.ApiTelegramException as e:
+        if "no text in the message" in str(e) or "there is no text" in str(e):
+            # Если сообщение содержит фото (нет текста), отправляем новое сообщение
+            bot.send_message(
+                call.message.chat.id,
+                f"🚫 *Пожаловаться на пользователя*\n\n"
+                f"Выберите причину жалобы:",
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        else:
+            raise e
     
     bot.answer_callback_query(call.id)
 
