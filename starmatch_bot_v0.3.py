@@ -31,6 +31,7 @@ MATCH_PRICE = 0  # стоимость проверки совместимост�
 REQUIRED_CHANNEL = "@StarrMatch"  # Или ID: -1001234567890
 CHANNEL_INVITE_LINK = "https://t.me/StarrMatch"  # Ссылка для вступления
 CHANNEL_NAME = "StarMatch"
+CHANNEL_IS_NEEDED = False
 
 # Кэш для хранения результатов проверки (чтобы не проверять каждый раз)
 subscription_cache = {}
@@ -498,7 +499,7 @@ def start(message: Message):
             return
     
     # Стандартная проверка подписки
-    if not check_channel_subscription(int(user_id)):
+    if not check_channel_subscription(int(user_id)) and CHANNEL_IS_NEEDED:
         # Создаем интерактивное сообщение с кнопками
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
