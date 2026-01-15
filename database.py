@@ -215,7 +215,6 @@ class Database:
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM users WHERE is_fake = 1')
-        self.conn.commit()
         return cursor.rowcount
     
     # === Методы для лайков ===
