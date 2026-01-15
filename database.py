@@ -168,52 +168,37 @@ class Database:
         
         return [dict(row) for row in cursor.fetchall()]
     
-    def get_users_by_filters(self, exclude_user_id=None, gender=None, zodiac=None, city_filter=None):
-        """Получает пользователей по фильтрам"""
-        query = "SELECT * FROM users WHERE user_id != ? AND (is_hidden IS NULL OR is_hidden = 0)"
-        params = [exclude_user_id]
+    def get_users_by_filters(self, exclude_user_id: str = None, gender: str = None, 
+                            zodiac: str = None, city_filter: str = None) -> List[Dict]:
+        """Получить пользователей с фильтрами"""
+        conn = self.get_connection()
+        cursor = conn.cursor()
         
-        # Фильтр по полу
+        query = 'SELECT * FROM users WHERE 1=1'
+        params = []
+        
+        if exclude_user_id:
+            query += ' AND user_id != ?'
+            params.append(exclude_user_id)
+        
         if gender:
-            query += " AND gender = ?"
+            query += ' AND gender = ?'
             params.append(gender)
         
-        # Фильтр по знаку зодиака
         if zodiac:
-            query += " AND zodiac LIKE ?"
-            params.append(f"%{zodiac}%")
+            query += ' AND zodiac = ?'
+            params.append(zodiac)
         
-        # Фильтр по городу
-        if city_filter:
-            if city_filter == "same_city":
-                # Получаем город текущего пользователя
-                current_user = self.get_user(exclude_user_id)
-                if current_user and current_user.get('city'):
-                    query += " AND city = ?"
-                    params.append(current_user['city'])
+        if city_filter == "same_city" and exclude_user_id:
+            # Получаем город текущего пользователя
+            cursor.execute('SELECT city FROM users WHERE user_id = ?', (exclude_user_id,))
+            user_city_row = cursor.fetchone()
+            if user_city_row and user_city_row[0]:
+                query += ' AND city = ?'
+                params.append(user_city_row[0])
         
-        query += " ORDER BY RANDOM()"  # Случайный порядок
-        self.cursor.execute(query, params)
-        
-        users = self.cursor.fetchall()
-        result = []
-        
-        for user in users:
-            user_dict = {
-                'user_id': user[0],
-                'name': user[1],
-                'gender': user[2],
-                'birthday': user[3],
-                'age': user[4],
-                'photo_id': user[5],
-                'bio': user[6],
-                'zodiac': user[7],
-                'city': user[8],
-                'balance': user[9]
-            }
-            result.append(user_dict)
-        
-        return result
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
     
     # === Методы для лайков ===
     def add_like(self, from_user_id: str, to_user_id: str) -> bool:
@@ -393,228 +378,3 @@ class Database:
         if hasattr(self._local, 'conn'):
             self._local.conn.close()
             del self._local.conn
-
-    # В class Database добавить следующие методы:
-
-def create_reports_table(self):
-    """Создает таблицу для жалоб"""
-    self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS reports (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            reported_user_id TEXT NOT NULL,
-            reporter_user_id TEXT NOT NULL,
-            reason TEXT,
-            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (reported_user_id) REFERENCES users (user_id) ON DELETE CASCADE,
-            FOREIGN KEY (reporter_user_id) REFERENCES users (user_id) ON DELETE CASCADE
-        )
-    ''')
-    self.connection.commit()
-
-def create_banned_users_table(self):
-    """Создает таблицу для заблокированных пользователей"""
-    self.cursor.execute('''
-        CREATE TABLE IF NOT EXISTS banned_users (
-            user_id TEXT PRIMARY KEY,
-            reason TEXT,
-            banned_by TEXT,
-            banned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
-        )
-    ''')
-    self.connection.commit()
-
-def add_report(self, reported_user_id, reporter_user_id, reason=None):
-    """Добавляет жалобу на пользователя"""
-    # Проверяем, не жаловался ли уже этот пользователь
-    self.cursor.execute('''
-        SELECT id FROM reports 
-        WHERE reported_user_id = ? AND reporter_user_id = ?
-    ''', (reported_user_id, reporter_user_id))
-    
-    if self.cursor.fetchone():
-        return False  # Уже жаловался
-    
-    self.cursor.execute('''
-        INSERT INTO reports (reported_user_id, reporter_user_id, reason)
-        VALUES (?, ?, ?)
-    ''', (reported_user_id, reporter_user_id, reason))
-    self.connection.commit()
-    
-    # Проверяем количество жалоб
-    report_count = self.get_report_count(reported_user_id)
-    
-    if report_count >= 15:
-        # Автоматически скрываем анкету
-        self.hide_user_profile(reported_user_id)
-    
-    return True
-
-def get_report_count(self, user_id):
-    """Получает количество жалоб на пользователя"""
-    self.cursor.execute('''
-        SELECT COUNT(*) FROM reports WHERE reported_user_id = ?
-    ''', (user_id,))
-    return self.cursor.fetchone()[0]
-
-def hide_user_profile(self, user_id):
-    """Скрывает анкету пользователя (устанавливает флаг)"""
-    self.cursor.execute('''
-        UPDATE users SET is_hidden = 1 WHERE user_id = ?
-    ''', (user_id,))
-    self.connection.commit()
-
-def unhide_user_profile(self, user_id):
-    """Показывает анкету пользователя"""
-    self.cursor.execute('''
-        UPDATE users SET is_hidden = 0 WHERE user_id = ?
-    ''', (user_id,))
-    self.connection.commit()
-
-def get_users_with_reports(self, limit=50):
-    """Получает пользователей с жалобами, отсортированных по количеству жалоб"""
-    self.cursor.execute('''
-        SELECT 
-            u.user_id, 
-            u.name, 
-            u.gender,
-            u.age,
-            COUNT(r.id) as report_count,
-            GROUP_CONCAT(DISTINCT r.reason) as reasons
-        FROM users u
-        LEFT JOIN reports r ON u.user_id = r.reported_user_id
-        WHERE u.is_hidden = 0 OR u.is_hidden IS NULL
-        GROUP BY u.user_id
-        HAVING report_count > 0
-        ORDER BY report_count DESC
-        LIMIT ?
-    ''', (limit,))
-    
-    users = self.cursor.fetchall()
-    result = []
-    
-    for user in users:
-        user_dict = {
-            'user_id': user[0],
-            'name': user[1],
-            'gender': user[2],
-            'age': user[3],
-            'report_count': user[4],
-            'reasons': user[5].split(',') if user[5] else []
-        }
-        result.append(user_dict)
-    
-    return result
-
-def get_user_reports_details(self, user_id):
-    """Получает детальную информацию о жалобах на пользователя"""
-    self.cursor.execute('''
-        SELECT 
-            r.id,
-            r.reporter_user_id,
-            u.name as reporter_name,
-            r.reason,
-            r.timestamp
-        FROM reports r
-        JOIN users u ON r.reporter_user_id = u.user_id
-        WHERE r.reported_user_id = ?
-        ORDER BY r.timestamp DESC
-    ''', (user_id,))
-    
-    reports = self.cursor.fetchall()
-    result = []
-    
-    for report in reports:
-        report_dict = {
-            'report_id': report[0],
-            'reporter_id': report[1],
-            'reporter_name': report[2],
-            'reason': report[3],
-            'timestamp': report[4]
-        }
-        result.append(report_dict)
-    
-    return result
-
-def delete_reports_for_user(self, user_id):
-    """Удаляет все жалобы на пользователя"""
-    self.cursor.execute('DELETE FROM reports WHERE reported_user_id = ?', (user_id,))
-    self.connection.commit()
-    return self.cursor.rowcount
-
-def ban_user(self, user_id, reason=None, banned_by="admin"):
-    """Блокирует пользователя"""
-    try:
-        self.cursor.execute('''
-            INSERT OR REPLACE INTO banned_users (user_id, reason, banned_by)
-            VALUES (?, ?, ?)
-        ''', (user_id, reason, banned_by))
-        
-        # Скрываем анкету
-        self.hide_user_profile(user_id)
-        
-        # Очищаем жалобы
-        self.delete_reports_for_user(user_id)
-        
-        self.connection.commit()
-        return True
-    except:
-        return False
-
-def unban_user(self, user_id):
-    """Разблокирует пользователя"""
-    try:
-        self.cursor.execute('DELETE FROM banned_users WHERE user_id = ?', (user_id,))
-        
-        # Показываем анкету
-        self.unhide_user_profile(user_id)
-        
-        self.connection.commit()
-        return True
-    except:
-        return False
-
-def is_user_banned(self, user_id):
-    """Проверяет, заблокирован ли пользователь"""
-    self.cursor.execute('SELECT user_id FROM banned_users WHERE user_id = ?', (user_id,))
-    return self.cursor.fetchone() is not None
-
-def get_banned_users(self):
-    """Получает список заблокированных пользователей"""
-    self.cursor.execute('''
-        SELECT u.user_id, u.name, b.reason, b.banned_at, b.banned_by
-        FROM banned_users b
-        JOIN users u ON b.user_id = u.user_id
-        ORDER BY b.banned_at DESC
-    ''')
-    
-    users = self.cursor.fetchall()
-    result = []
-    
-    for user in users:
-        user_dict = {
-            'user_id': user[0],
-            'name': user[1],
-            'reason': user[2],
-            'banned_at': user[3],
-            'banned_by': user[4]
-        }
-        result.append(user_dict)
-    
-    return result
-
-# В методе __init__ класса Database добавьте:
-def __init__(self, db_name):
-    self.connection = sqlite3.connect(db_name, check_same_thread=False)
-    self.cursor = self.connection.cursor()
-    self.create_tables()  # Существующий метод
-    self.create_reports_table()  # Добавить эту строку
-    self.create_banned_users_table()  # И эту
-    
-# В методе get_users_by_filters добавьте фильтр по скрытым анкетам:
-def get_users_by_filters(self, exclude_user_id=None, gender=None, zodiac=None, city_filter=None):
-    """Получает пользователей по фильтрам (ИСКЛЮЧАЯ скрытые анкеты)"""
-    query = "SELECT * FROM users WHERE user_id != ? AND (is_hidden IS NULL OR is_hidden = 0)"
-    params = [exclude_user_id]
-    
-    # ... остальной код метода без изменений ...
