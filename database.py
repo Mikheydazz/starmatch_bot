@@ -1,100 +1,49 @@
 import sqlite3
 import threading
-import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
-import atexit
-
-# Глобальная блокировка для безопасного доступа к БД
-db_lock = threading.Lock()
 
 class Database:
     def __init__(self, db_file='bot_database.db'):
         self.db_file = db_file
-        self._connection_pool = {}
-        self._pool_lock = threading.Lock()
+        self._local = threading.local()
         self.init_database()
     
     def get_connection(self):
-        """Получаем соединение с БД для текущего потока с защитой от блокировок"""
-        thread_id = threading.get_ident()
-        
-        with self._pool_lock:
-            if thread_id not in self._connection_pool:
-                try:
-                    # Создаем новое соединение с настройками для избежания блокировок
-                    conn = sqlite3.connect(
-                        self.db_file,
-                        check_same_thread=False,
-                        timeout=30.0,  # Увеличиваем таймаут
-                        isolation_level=None  # Для ручного управления транзакциями
-                    )
-                    
-                    # Оптимизируем SQLite
-                    conn.execute("PRAGMA journal_mode=WAL")
-                    conn.execute("PRAGMA synchronous=NORMAL")
-                    conn.execute("PRAGMA busy_timeout=5000")  # 5 секунд таймаута
-                    conn.execute("PRAGMA cache_size=10000")
-                    conn.execute("PRAGMA foreign_keys=ON")
-                    
-                    conn.row_factory = sqlite3.Row
-                    self._connection_pool[thread_id] = conn
-                    
-                except Exception as e:
-                    print(f"❌ Ошибка подключения к БД: {e}")
-                    raise
-        
-        return self._connection_pool[thread_id]
-    
-    def retry_on_locked(self, max_retries=3):
-        """Декоратор для повторных попыток при блокировке БД"""
-        def decorator(func):
-            def wrapper(*args, **kwargs):
-                for attempt in range(max_retries):
-                    try:
-                        with db_lock:  # Используем глобальную блокировку
-                            return func(*args, **kwargs)
-                    except sqlite3.OperationalError as e:
-                        if "database is locked" in str(e) and attempt < max_retries - 1:
-                            wait_time = (attempt + 1) * 0.1  # Экспоненциальная задержка
-                            print(f"⚠️ БД заблокирована, попытка {attempt + 1}/{max_retries}, жду {wait_time}с")
-                            time.sleep(wait_time)
-                            continue
-                        else:
-                            raise
-                    except Exception as e:
-                        raise e
-            return wrapper
-        return decorator
+        """Получаем соединение с БД для текущего потока"""
+        if not hasattr(self._local, 'conn'):
+            self._local.conn = sqlite3.connect(
+                self.db_file, 
+                check_same_thread=False,
+                timeout=10
+            )
+            self._local.conn.row_factory = sqlite3.Row  # Возвращаем словари
+        return self._local.conn
     
     def init_database(self):
         """Инициализация всех таблиц"""
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        with db_lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            # Таблица пользователей
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id TEXT PRIMARY KEY,
-                    balance INTEGER DEFAULT 3,
-                    registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    name TEXT NOT NULL,
-                    gender TEXT NOT NULL,
-                    birthday TEXT NOT NULL,
-                    age INTEGER NOT NULL,
-                    photo_id TEXT,
-                    bio TEXT NOT NULL,
-                    zodiac TEXT NOT NULL,
-                    city TEXT,
-                    is_fake INTEGER DEFAULT 0,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            ''')
+        # Таблица пользователей
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                balance INTEGER DEFAULT 3,
+                registered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                name TEXT NOT NULL,
+                gender TEXT NOT NULL,
+                birthday TEXT NOT NULL,
+                age INTEGER NOT NULL,
+                photo_id TEXT,
+                bio TEXT NOT NULL,
+                zodiac TEXT NOT NULL,
+                city TEXT,
+                is_fake INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
 
 
         # Таблица лайков
@@ -146,7 +95,6 @@ class Database:
         conn.commit()
     
     # === Методы для пользователей ===
-    @retry_on_locked(max_retries=3)
     def user_exists(self, user_id: str) -> bool:
         """Проверить, существует ли пользователь"""
         conn = self.get_connection()
@@ -154,7 +102,6 @@ class Database:
         cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (user_id,))
         return cursor.fetchone() is not None
     
-    @retry_on_locked(max_retries=3)
     def get_user(self, user_id: str) -> Optional[Dict]:
         """Получить пользователя по ID"""
         conn = self.get_connection()
@@ -163,11 +110,10 @@ class Database:
         row = cursor.fetchone()
         return dict(row) if row else None
     
-    @retry_on_locked(max_retries=3)
     def save_user(self, user_id: str, name: str, gender: str, birthday: str, age: int,
                   bio: str, zodiac: str, balance: int = 3, photo_id: str = None, 
                   city: str = None, is_fake: int = 0) -> bool:
-        """Сохранить или обновить пользователя с защитой от блокировок"""
+        """Сохранить или обновить пользователя"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
@@ -187,10 +133,9 @@ class Database:
             conn.commit()
             return True
         except Exception as e:
-            print(f"❌ Ошибка сохранения пользователя {user_id}: {e}")
+            print(f"Ошибка сохранения пользователя {user_id}: {e}")
             return False
     
-    @retry_on_locked(max_retries=3)
     def update_user_balance(self, user_id: str, delta: int) -> bool:
         """Обновить баланс пользователя"""
         try:
@@ -206,7 +151,6 @@ class Database:
             print(f"Ошибка обновления баланса пользователя {user_id}: {e}")
             return False
     
-    @retry_on_locked(max_retries=3)
     def get_user_count(self) -> int:
         """Получить общее количество пользователей"""
         conn = self.get_connection()
@@ -214,7 +158,6 @@ class Database:
         cursor.execute('SELECT COUNT(*) FROM users')
         return cursor.fetchone()[0]
     
-    @retry_on_locked(max_retries=3)
     def get_all_users(self, exclude_user_id: str = None) -> List[Dict]:
         """Получить всех пользователей (кроме указанного)"""
         conn = self.get_connection()
@@ -227,7 +170,6 @@ class Database:
         
         return [dict(row) for row in cursor.fetchall()]
     
-    @retry_on_locked(max_retries=3)
     def get_users_by_filters(self, exclude_user_id: str = None, gender: str = None, 
                             zodiac: str = None, city_filter: str = None) -> List[Dict]:
         """Получить пользователей с фильтрами"""
@@ -260,7 +202,6 @@ class Database:
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
     
-    @retry_on_locked(max_retries=3)
     def get_fake_users_count(self):
         """Возвращает количество фейковых анкет"""
         conn = self.get_connection()
@@ -269,17 +210,14 @@ class Database:
         result = cursor.fetchone()
         return result[0] if result else 0
 
-    @retry_on_locked(max_retries=3)
     def delete_all_fake_users(self):
         """Удаляет все фейковые анкеты"""
         conn = self.get_connection()
         cursor = conn.cursor()
         cursor.execute('DELETE FROM users WHERE is_fake = 1')
-        conn.commit()
         return cursor.rowcount
     
     # === Методы для лайков ===
-    @retry_on_locked(max_retries=3)
     def add_like(self, from_user_id: str, to_user_id: str) -> bool:
         """Добавить лайк и проверить взаимность, возвращает True если лайк взаимный"""
         try:
@@ -332,7 +270,6 @@ class Database:
             conn.rollback()
             return False
     
-    @retry_on_locked(max_retries=3)
     def get_mutual_likes(self, user_id: str) -> List[Dict]:
         """Получить всех пользователей, с которыми есть взаимная симпатия"""
         conn = self.get_connection()
@@ -353,7 +290,6 @@ class Database:
         
         return [dict(row) for row in cursor.fetchall()]
     
-    @retry_on_locked(max_retries=3)
     def is_mutual_like(self, user1_id: str, user2_id: str) -> bool:
         """Проверить, есть ли взаимная симпатия между двумя пользователями"""
         conn = self.get_connection()
@@ -367,7 +303,6 @@ class Database:
         
         return cursor.fetchone() is not None
     
-    @retry_on_locked(max_retries=3)
     def get_like_count(self, user_id: str, direction: str = 'sent') -> int:
         """Получить количество отправленных или полученных лайков"""
         conn = self.get_connection()
@@ -381,7 +316,6 @@ class Database:
         return cursor.fetchone()[0]
     
     # === Методы для платежей ===
-    @retry_on_locked(max_retries=3)
     def add_payment(self, user_id: str, amount: int, description: str = None) -> bool:
         """Добавить запись о платеже"""
         try:
@@ -399,7 +333,6 @@ class Database:
             print(f"Ошибка добавления платежа для пользователя {user_id}: {e}")
             return False
     
-    @retry_on_locked(max_retries=3)
     def get_user_payments(self, user_id: str) -> List[Dict]:
         """Получить историю платежей пользователя"""
         conn = self.get_connection()
@@ -413,7 +346,6 @@ class Database:
         return [dict(row) for row in cursor.fetchall()]
     
     # === Вспомогательные методы ===
-    @retry_on_locked(max_retries=3)
     def get_user_profile(self, user_id: str) -> Optional[Dict]:
         """Получить профиль пользователя в формате, совместимом со старым кодом"""
         user = self.get_user(user_id)
@@ -431,7 +363,6 @@ class Database:
             "city": user.get("city")
         }
     
-    @retry_on_locked(max_retries=3)
     def search_users(self, query: str, limit: int = 20) -> List[Dict]:
         """Поиск пользователей по имени или городу"""
         conn = self.get_connection()
@@ -446,7 +377,6 @@ class Database:
         
         return [dict(row) for row in cursor.fetchall()]
     
-    @retry_on_locked(max_retries=3)
     def get_recent_users(self, limit: int = 10) -> List[Dict]:
         """Получить недавно зарегистрированных пользователей"""
         conn = self.get_connection()
@@ -460,20 +390,8 @@ class Database:
         
         return [dict(row) for row in cursor.fetchall()]
     
-
-    def cleanup(self):
-        """Закрыть все соединения с БД"""
-        with self._pool_lock:
-            for thread_id, conn in self._connection_pool.items():
-                try:
-                    conn.close()
-                except:
-                    pass
-            self._connection_pool.clear()
-            print("✅ Все соединения с БД закрыты")
-
-# Создаем экземпляр БД
-db = Database('bot_database.db')
-
-# Регистрируем очистку при завершении
-atexit.register(lambda: db.cleanup())
+    def close(self):
+        """Закрыть соединение с БД"""
+        if hasattr(self._local, 'conn'):
+            self._local.conn.close()
+            del self._local.conn
