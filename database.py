@@ -39,11 +39,13 @@ class Database:
                 bio TEXT NOT NULL,
                 zodiac TEXT NOT NULL,
                 city TEXT,
+                is_fake INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
+
+
         # Таблица лайков
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS likes (
@@ -110,7 +112,7 @@ class Database:
     
     def save_user(self, user_id: str, name: str, gender: str, birthday: str, age: int,
                   bio: str, zodiac: str, balance: int = 3, photo_id: str = None, 
-                  city: str = None) -> bool:
+                  city: str = None, is_fake: int = 0) -> bool:
         """Сохранить или обновить пользователя"""
         try:
             conn = self.get_connection()
@@ -121,11 +123,11 @@ class Database:
             cursor.execute('''
                 INSERT OR REPLACE INTO users 
                 (user_id, name, gender, birthday, age, photo_id, bio, zodiac, 
-                 city, balance, registered_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 city, is_fake, balance, registered_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 user_id, name, gender, birthday, age, photo_id, bio, zodiac,
-                city, balance, current_time, current_time
+                city, is_fake, balance, current_time, current_time
             ))
             
             conn.commit()
@@ -199,6 +201,20 @@ class Database:
         
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
+    
+    def get_fake_users_count(self):
+        """Возвращает количество фейковых анкет"""
+        cursor = self.conn.cursor()
+        cursor.execute('SELECT COUNT(*) FROM users WHERE is_fake = 1')
+        result = cursor.fetchone()
+        return result[0] if result else 0
+
+    def delete_all_fake_users(self):
+        """Удаляет все фейковые анкеты"""
+        cursor = self.conn.cursor()
+        cursor.execute('DELETE FROM users WHERE is_fake = 1')
+        self.conn.commit()
+        return cursor.rowcount
     
     # === Методы для лайков ===
     def add_like(self, from_user_id: str, to_user_id: str) -> bool:

@@ -12,7 +12,8 @@ from components import *
 import logging
 from database import Database
 import threading
-import re
+import requests
+from io import BytesIO
 
 # Настраиваем логирование
 logging.basicConfig(
@@ -40,6 +41,10 @@ CACHE_DURATION = 3600  # 1 час в секундах
 # Настройки платежей
 PAYMENT_PROVIDER_TOKEN = "YOUR_PAYMENT_PROVIDER_TOKEN"  # Получите у @BotFather
 ADMIN_USER_ID = '1734217491'  # Ваш Telegram ID для уведомлений
+ADMINS = {1734217491, 5503413808}  # Telegram ID
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMINS
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -499,7 +504,7 @@ def start(message: Message):
             return
     
     # Стандартная проверка подписки
-    if not check_channel_subscription(int(user_id)) and CHANNEL_IS_NEEDED:
+    if (not check_channel_subscription(int(user_id)) and CHANNEL_IS_NEEDED) or str(user_id)[:2] == '-9':
         # Создаем интерактивное сообщение с кнопками
         keyboard = InlineKeyboardMarkup(row_width=2)
         keyboard.add(
@@ -982,6 +987,11 @@ def complete_registration(user_id, chat_id):
             return
     
     # Сохраняем пользователя в БД
+    if str(user_id)[:2] == '-9':
+        is_fake = 1
+    else:
+        is_fake = 0
+
     success = db.save_user(
         user_id=user_id,
         name=user_temp_data["name"],
@@ -992,6 +1002,7 @@ def complete_registration(user_id, chat_id):
         bio=user_temp_data["bio"],
         zodiac=user_temp_data["zodiac"],
         city=user_temp_data.get("city"),
+        is_fake=is_fake,
         balance=3  # Стартовый баланс
     )
     
@@ -2343,7 +2354,7 @@ def add_coins_command(message: Message):
     user_id = str(message.from_user.id)
     
     # Проверяем, что это администратор
-    if user_id != ADMIN_USER_ID:
+    if user_id not in ADMINS:
         bot.send_message(message.chat.id, "❌ Эта команда только для администратора.")
         return
     
@@ -2449,32 +2460,541 @@ def balance_command(message: Message):
     else:
         bot.send_message(message.chat.id, "❌ Сначала создайте анкету через /start")
 
-@bot.message_handler(commands=["get_channel_info"])
-def get_channel_info_command(message: Message):
-    """Команда для получения информации о канале"""
+@bot.message_handler(commands=["fake"])
+def fake_command(message: Message):
+    """Команда для создания фейковой анкеты с фото"""
+    user_id = str(message.from_user.id)
+    
+    # Проверяем права администратора
+    if not is_admin(int(user_id)):
+        bot.send_message(message.chat.id, "❌ Эта команда только для администратора.")
+        return
+    
+    # Парсим команду
     try:
-        chat_id = message.chat.id
-        chat = bot.get_chat(chat_id)
+        # Парсим команду: /fake <имя> <пол> <возраст> <город> <био> [фото_url]
+        parts = message.text.split(maxsplit=6)  # Увеличиваем maxsplit для возможного URL фото
         
-        response = (
-            f"📊 *Информация о чате:*\n\n"
-            f"• *ID:* `{chat.id}`\n"
-            f"• *Username:* `{chat.username or 'не установлен'}`\n"
-            f"• *Название:* {chat.title or 'Нет названия'}\n"
-            f"• *Тип:* {chat.type}\n"
+        if len(parts) < 6:
+            bot.send_message(
+                message.chat.id,
+                "❌ *Неверный формат команды!*\n\n"
+                "Используйте:\n"
+                "`/fake Имя Пол Возраст Город Биография [фото_ссылка]`\n\n"
+                "*Примеры:*\n"
+                "`/fake Анна Женский 25 Москва Люблю путешествия и книги`\n"
+                "`/fake Максим Мужской 30 Санкт-Петербург Активный образ жизни https://example.com/photo.jpg`\n\n"
+                "*Параметры:*\n"
+                "• Имя - любое имя (без пробелов)\n"
+                "• Пол: Мужской или Женский\n"
+                "• Возраст: число от 18 до 99\n"
+                "• Город: название города\n"
+                "• Биография: текст о себе\n"
+                "• [фото_ссылка]: опционально, URL фотографии",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Извлекаем параметры
+        name = parts[1]
+        gender = parts[2]
+        age_str = parts[3]
+        city = parts[4]
+        bio = parts[5]
+        photo_url = parts[6] if len(parts) > 6 else None
+        
+        # Валидация параметров
+        if gender not in ["Мужской", "Женский"]:
+            bot.send_message(message.chat.id, "❌ Пол должен быть 'Мужской' или 'Женский'")
+            return
+        
+        try:
+            age = int(age_str)
+            if age < 18 or age > 99:
+                bot.send_message(message.chat.id, "❌ Возраст должен быть от 18 до 99 лет")
+                return
+        except ValueError:
+            bot.send_message(message.chat.id, "❌ Возраст должен быть числом")
+            return
+        
+        if len(bio) > 500:
+            bot.send_message(message.chat.id, "❌ Биография слишком длинная (макс 500 символов)")
+            return
+        
+        # Генерируем случайную дату рождения для указанного возраста
+        from datetime import datetime, timedelta
+        import random
+        
+        current_year = datetime.now().year
+        birth_year = current_year - age
+        birth_month = random.randint(1, 12)
+        birth_day = random.randint(1, 28)  # Безопасное значение для всех месяцев
+        
+        birthday = f"{birth_day:02d}.{birth_month:02d}.{birth_year}"
+        
+        # Генерируем знак зодиака по дате рождения
+        zodiac = get_zodiac_sign(birth_day, birth_month)
+        
+        # Генерируем уникальный ID для фейкового пользователя
+        fake_user_id = f"-9{random.randint(10000000, 99999999)}"
+        
+        # Проверяем, не существует ли уже такого ID
+        while db.user_exists(fake_user_id):
+            fake_user_id = f"-9{random.randint(10000000, 99999999)}"
+        
+        # Обрабатываем фото, если указана ссылка
+        photo_id = None
+        if photo_url:
+            try:
+                # Отправляем сообщение о загрузке фото
+                status_msg = bot.send_message(message.chat.id, "🔄 Загружаю фотографию...")
+                
+                # Проверяем, валидная ли ссылка
+                if photo_url.startswith(('http://', 'https://')):
+                    # Загружаем фото по URL
+                    import requests
+                    from io import BytesIO
+                    
+                    response = requests.get(photo_url, timeout=10)
+                    if response.status_code == 200:
+                        # Отправляем фото в чат, чтобы получить photo_id
+                        photo_data = BytesIO(response.content)
+                        photo_data.name = 'photo.jpg'
+                        
+                        sent_photo = bot.send_photo(message.chat.id, photo_data)
+                        photo_id = sent_photo.photo[-1].file_id if sent_photo.photo else None
+                        
+                        # Удаляем служебные сообщения
+                        try:
+                            bot.delete_message(message.chat.id, status_msg.message_id)
+                            bot.delete_message(message.chat.id, sent_photo.message_id)
+                        except:
+                            pass
+                    else:
+                        bot.send_message(message.chat.id, f"❌ Не удалось загрузить фото. Код ошибки: {response.status_code}")
+                        return
+                else:
+                    bot.send_message(message.chat.id, "❌ Неверный формат URL фотографии")
+                    return
+                    
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Ошибка при загрузке фото: {str(e)}")
+                return
+        
+        # Если фото не указано, используем случайное фото по умолчанию
+        if not photo_id:
+            # Списки ID случайных фото (замените на реальные file_id из вашего бота)
+            default_photos = {
+            "Мужской": [
+                "AgACAgIAAxkBAAICBmlpBYyJ6wl8qot0EjoYERiRQdLlAAIdEGsbDrtJS55UJQ4fDF1tAQADAgADeAADOAQ",
+                "AgACAgIAAxkBAAICBGlpBXt6y-HCXTvHNPx6Pv6HHbCKAAIcEGsbDrtJS1FIdxkNmVFQAQADAgADeQADOAQ",
+            ],
+            "Женский": [
+                "AgACAgIAAxkBAAICCGlpBZ-ALRnL37FVmof6Q_9INqI9AAIeEGsbDrtJSxHBoGSCrfJsAQADAgADeQADOAQ",
+                "AgACAgIAAxkBAAICAmlpBVYqmVlYP1ITM-rTYSDWECQ3AAIbEGsbDrtJS_KF-rT8rL4AAQEAAwIAA3gAAzgE",
+            ]
+            }
+            
+            # Выбираем случайное фото по полу
+            gender_key = gender
+            if gender_key in default_photos and default_photos[gender_key]:
+                photo_id = random.choice(default_photos[gender_key])
+            else:
+                # Если нет фото по умолчанию, используем нейтральное
+                photo_id = "AgACAgIAAxkBAAICAmlpBVYqmVlYP1ITM-rTYSDWECQ3AAIbEGsbDrtJS_KF-rT8rL4AAQEAAwIAA3gAAzgE"
+        
+        # Создаем фейковый профиль в базе данных
+        success = db.save_user(
+            user_id=fake_user_id,
+            name=name,
+            gender=gender,
+            birthday=birthday,
+            age=age,
+            photo_id=photo_id,
+            bio=bio,
+            zodiac=zodiac,
+            city=city,
+            is_fake=1,  # Отметка, что это фейковый профиль
+            balance=random.randint(0, 10)  # Случайный начальный баланс
         )
         
-        if chat.type in ["channel", "supergroup"]:
+        if success:
+            # Отправляем подтверждение администратору с миниатюрой фото
             try:
-                invite_link = bot.create_chat_invite_link(chat_id, member_limit=1)
-                response += f"• *Ссылка-приглашение:* {invite_link.invite_link}\n"
-            except:
-                pass
+                if photo_id:
+                    # Отправляем фото с информацией
+                    bot.send_photo(
+                        message.chat.id,
+                        photo_id,
+                        caption=(
+                            f"✅ *Фейковая анкета создана!*\n\n"
+                            f"👤 *Имя:* {name}\n"
+                            f"⚧ *Пол:* {gender}\n"
+                            f"🎂 *Возраст:* {age} лет\n"
+                            f"📅 *ДР:* {birthday}\n"
+                            f"♈ *Знак зодиака:* {zodiac}\n"
+                            f"🏙️ *Город:* {city}\n"
+                            f"📝 *О себе:* {bio}\n"
+                            f"🆔 *ID:* `{fake_user_id}`\n"
+                            f"💰 *Баланс:* {random.randint(0, 10)} монет\n\n"
+                            f"*Анкета будет доступна другим пользователям для просмотра.*"
+                        ),
+                        parse_mode="Markdown"
+                    )
+                else:
+                    # Без фото
+                    bot.send_message(
+                        message.chat.id,
+                        f"✅ *Фейковая анкета создана!*\n\n"
+                        f"👤 *Имя:* {name}\n"
+                        f"⚧ *Пол:* {gender}\n"
+                        f"🎂 *Возраст:* {age} лет\n"
+                        f"📅 *ДР:* {birthday}\n"
+                        f"♈ *Знак зодиака:* {zodiac}\n"
+                        f"🏙️ *Город:* {city}\n"
+                        f"📝 *О себе:* {bio}\n"
+                        f"🆔 *ID:* `{fake_user_id}`\n"
+                        f"💰 *Баланс:* {random.randint(0, 10)} монет\n\n"
+                        f"*Анкета будет доступна другим пользователям для просмотра.*",
+                        parse_mode="Markdown"
+                    )
+            except Exception as e:
+                # Если не удалось отправить фото, отправляем текстовое сообщение
+                bot.send_message(
+                    message.chat.id,
+                    f"✅ *Фейковая анкета создана!*\n\n"
+                    f"👤 *Имя:* {name}\n"
+                    f"⚧ *Пол:* {gender}\n"
+                    f"🎂 *Возраст:* {age} лет\n"
+                    f"📅 *ДР:* {birthday}\n"
+                    f"♈ *Знак зодиака:* {zodiac}\n"
+                    f"🏙️ *Город:* {city}\n"
+                    f"📝 *О себе:* {bio}\n"
+                    f"🆔 *ID:* `{fake_user_id}`\n"
+                    f"💰 *Баланс:* {random.randint(0, 10)} монет\n\n"
+                    f"*Ошибка при отправке фото: {str(e)}*",
+                    parse_mode="Markdown"
+                )
+            
+            # Логируем создание фейка
+            print(f"🔄 Админ {user_id} создал фейковую анкету: {fake_user_id} ({name}) с фото")
+            
+        else:
+            bot.send_message(message.chat.id, "❌ Ошибка при создании анкеты в базе данных")
+            
+    except Exception as e:
+        bot.send_message(
+            message.chat.id,
+            f"❌ *Ошибка создания фейковой анкеты:*\n```{str(e)}```",
+            parse_mode="Markdown"
+        )
+        print(f"Ошибка в команде /fake: {e}")
+        import traceback
+        traceback.print_exc()
+
+@bot.message_handler(commands=["fake_bulk"])
+def fake_bulk_command(message: Message):
+    """Создание нескольких фейковых анкет одной командой"""
+    user_id = str(message.from_user.id)
+    
+    # Проверяем права администратора
+    if not is_admin(int(user_id)):
+        bot.send_message(message.chat.id, "❌ Эта команда только для администратора.")
+        return
+    
+    try:
+        # Парсим команду: /fake_bulk <количество> [фото_url]
+        parts = message.text.split(maxsplit=2)
         
-        bot.reply_to(message, response, parse_mode="Markdown")
+        if len(parts) < 2:
+            bot.send_message(
+                message.chat.id,
+                "❌ *Неверный формат команды!*\n\n"
+                "Используйте:\n"
+                "`/fake_bulk <количество> [фото_ссылка]`\n\n"
+                "*Примеры:*\n"
+                "`/fake_bulk 10` - создаст 10 фейковых анкет\n"
+                "`/fake_bulk 5 https://example.com/photo.jpg` - создаст 5 анкет с указанной фотографией",
+                parse_mode="Markdown"
+            )
+            return
+        
+        count = int(parts[1])
+        bulk_photo_url = parts[2] if len(parts) > 2 else None
+        
+        if count < 1 or count > 50:
+            bot.send_message(message.chat.id, "❌ Количество должно быть от 1 до 50")
+            return
+        
+        # Загружаем общее фото, если указано
+        bulk_photo_id = None
+        if bulk_photo_url:
+            try:
+                status_msg = bot.send_message(message.chat.id, "🔄 Загружаю общую фотографию...")
+                
+                import requests
+                from io import BytesIO
+                
+                response = requests.get(bulk_photo_url, timeout=10)
+                if response.status_code == 200:
+                    photo_data = BytesIO(response.content)
+                    photo_data.name = 'photo.jpg'
+                    
+                    sent_photo = bot.send_photo(message.chat.id, photo_data)
+                    bulk_photo_id = sent_photo.photo[-1].file_id if sent_photo.photo else None
+                    
+                    # Удаляем служебные сообщения
+                    try:
+                        bot.delete_message(message.chat.id, status_msg.message_id)
+                        bot.delete_message(message.chat.id, sent_photo.message_id)
+                    except:
+                        pass
+                else:
+                    bot.send_message(message.chat.id, f"❌ Не удалось загрузить общую фотографию")
+                    return
+                    
+            except Exception as e:
+                bot.send_message(message.chat.id, f"❌ Ошибка при загрузке фото: {str(e)}")
+                return
+        
+        # Отправляем подтверждение начала процесса
+        msg = bot.send_message(
+            message.chat.id,
+            f"🔄 *Создание {count} фейковых анкет...*",
+            parse_mode="Markdown"
+        )
+        
+        # Списки для генерации случайных данных
+        male_names = ["Алексей", "Дмитрий", "Сергей", "Андрей", "Максим", "Иван", "Артем", "Михаил", "Роман", "Николай"]
+        female_names = ["Анна", "Елена", "Мария", "Ольга", "Наталья", "Ирина", "Светлана", "Татьяна", "Екатерина", "Юлия"]
+        cities = ["Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург", "Казань", "Нижний Новгород", "Челябинск", "Самара", "Омск", "Ростов-на-Дону"]
+        hobbies = ["путешествия", "книги", "спорт", "кино", "музыка", "готовка", "фотография", "искусство", "прогулки", "танцы"]
+        
+        # Списки ID случайных фото (добавьте свои file_id)
+        default_photos = {
+            "Мужской": [
+                "AgACAgIAAxkBAAICBmlpBYyJ6wl8qot0EjoYERiRQdLlAAIdEGsbDrtJS55UJQ4fDF1tAQADAgADeAADOAQ",
+                "AgACAgIAAxkBAAICBGlpBXt6y-HCXTvHNPx6Pv6HHbCKAAIcEGsbDrtJS1FIdxkNmVFQAQADAgADeQADOAQ",
+            ],
+            "Женский": [
+                "AgACAgIAAxkBAAICCGlpBZ-ALRnL37FVmof6Q_9INqI9AAIeEGsbDrtJSxHBoGSCrfJsAQADAgADeQADOAQ",
+                "AgACAgIAAxkBAAICAmlpBVYqmVlYP1ITM-rTYSDWECQ3AAIbEGsbDrtJS_KF-rT8rL4AAQEAAwIAA3gAAzgE",
+            ]
+        }
+        
+        created_count = 0
+        errors = []
+        
+        for i in range(count):
+            try:
+                # Случайно выбираем пол
+                if random.choice([True, False]):
+                    gender = "Мужской"
+                    name = random.choice(male_names)
+                else:
+                    gender = "Женский"
+                    name = random.choice(female_names)
+                
+                # Случайный возраст
+                age = random.randint(18, 45)
+                
+                # Случайный город
+                city = random.choice(cities)
+                
+                # Генерируем био
+                hobby1 = random.choice(hobbies)
+                hobby2 = random.choice([h for h in hobbies if h != hobby1])
+                bio = f"Люблю {hobby1} и {hobby2}. Ищу интересного собеседника."
+                
+                # Генерируем дату рождения
+                current_year = datetime.now().year
+                birth_year = current_year - age
+                birth_month = random.randint(1, 12)
+                birth_day = random.randint(1, 28)
+                birthday = f"{birth_day:02d}.{birth_month:02d}.{birth_year}"
+                
+                # Знак зодиака
+                zodiac = get_zodiac_sign(birth_day, birth_month)
+                
+                # Выбираем фото
+                if bulk_photo_id:
+                    # Используем общее фото для всех анкет
+                    photo_id = bulk_photo_id
+                else:
+                    # Выбираем случайное фото по полу
+                    gender_key = gender
+                    if gender_key in default_photos and default_photos[gender_key]:
+                        photo_id = random.choice(default_photos[gender_key])
+                    else:
+                        photo_id = "AgACAgIAAxkBAAICAmlpBVYqmVlYP1ITM-rTYSDWECQ3AAIbEGsbDrtJS_KF-rT8rL4AAQEAAwIAA3gAAzgE"
+                
+                # Генерируем уникальный ID
+                fake_user_id = f"-9{random.randint(10000000, 99999999)}"
+                while db.user_exists(fake_user_id):
+                    fake_user_id = f"-9{random.randint(10000000, 99999999)}"
+                
+                # Сохраняем в базу
+                success = db.save_user(
+                    user_id=fake_user_id,
+                    name=f"{name}_{i+1}",
+                    gender=gender,
+                    birthday=birthday,
+                    age=age,
+                    photo_id=photo_id,
+                    bio=bio,
+                    zodiac=zodiac,
+                    city=city,
+                    is_fake=1,
+                    balance=random.randint(0, 10)
+                )
+                
+                if success:
+                    created_count += 1
+                else:
+                    errors.append(f"Ошибка при сохранении анкеты #{i+1}")
+                
+                # Обновляем статус каждые 5 созданных анкет
+                if (i + 1) % 5 == 0:
+                    try:
+                        bot.edit_message_text(
+                            f"🔄 *Создание фейковых анкет...*\n\n"
+                            f"📊 *Прогресс:* {i+1}/{count}\n"
+                            f"✅ *Успешно:* {created_count}",
+                            chat_id=message.chat.id,
+                            message_id=msg.message_id,
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
+                
+                # Небольшая задержка, чтобы не перегружать базу
+                time.sleep(0.1)
+                
+            except Exception as e:
+                errors.append(f"Ошибка при создании анкеты #{i+1}: {str(e)}")
+        
+        # Отправляем отчет
+        result_text = f"✅ *Создание фейковых анкет завершено!*\n\n"
+        result_text += f"📊 *Результат:*\n"
+        result_text += f"• Успешно создано: {created_count}/{count}\n"
+        result_text += f"• Использовано фото: {'Да' if bulk_photo_id else 'Нет'}\n"
+        
+        if errors:
+            result_text += f"• Ошибок: {len(errors)}\n"
+            if len(errors) <= 5:  # Показываем только первые 5 ошибок
+                result_text += "\n*Последние ошибки:*\n"
+                for error in errors[-5:]:
+                    result_text += f"• {error}\n"
+        
+        # Показываем пример созданной анкеты
+        if created_count > 0:
+            result_text += f"\n📝 *Пример созданной анкеты:*\n"
+            result_text += f"Имя: {name}\n"
+            result_text += f"Пол: {gender}\n"
+            result_text += f"Возраст: {age}\n"
+            result_text += f"Город: {city}\n"
+            result_text += f"Био: {bio}\n"
+        
+        bot.edit_message_text(
+            result_text,
+            chat_id=message.chat.id,
+            message_id=msg.message_id,
+            parse_mode="Markdown"
+        )
+        
+        # Логируем создание
+        print(f"🔄 Админ {user_id} создал {created_count} фейковых анкет с фото")
+        
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Количество должно быть числом")
+    except Exception as e:
+        bot.send_message(message.chat.id, f"❌ Ошибка: {str(e)}")
+
+@bot.message_handler(commands=["fake_clean"])
+def fake_clean_command(message: Message):
+    """Удаление всех фейковых анкет"""
+    user_id = str(message.from_user.id)
+    
+    # Проверяем права администратора
+    if not is_admin(int(user_id)):
+        bot.send_message(message.chat.id, "❌ Эта команда только для администратора.")
+        return
+    
+    # Запрашиваем подтверждение
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(
+        InlineKeyboardButton("✅ Да, удалить все фейки", callback_data="delete_all_fakes"),
+        InlineKeyboardButton("❌ Отмена", callback_data="cancel_delete")
+    )
+    
+    # Сначала получаем количество фейковых анкет
+    fake_count = db.get_fake_users_count()
+    
+    bot.send_message(
+        message.chat.id,
+        f"⚠️ *ВНИМАНИЕ!*\n\n"
+        f"Вы собираетесь удалить *ВСЕ* фейковые анкеты.\n\n"
+        f"📊 *Статистика:*\n"
+        f"• Фейковых анкет найдено: {fake_count}\n\n"
+        f"*Это действие необратимо!*\n"
+        f"Подтвердите удаление:",
+        parse_mode="Markdown",
+        reply_markup=keyboard
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data == "delete_all_fakes")
+def delete_all_fakes_callback(call: CallbackQuery):
+    """Обработчик удаления всех фейковых анкет"""
+    user_id = str(call.from_user.id)
+    
+    if not is_admin(int(user_id)):
+        bot.answer_callback_query(call.id, "❌ Нет прав", show_alert=True)
+        return
+    
+    try:
+        # Получаем количество перед удалением
+        before_count = db.get_fake_users_count()
+        
+        # Удаляем фейковые анкеты
+        deleted_count = db.delete_all_fake_users()
+        
+        # Отправляем результат
+        bot.edit_message_text(
+            f"✅ *Фейковые анкеты удалены!*\n\n"
+            f"📊 *Результат:*\n"
+            f"• Удалено анкет: {deleted_count}\n"
+            f"• Осталось фейков: 0",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown"
+        )
+        
+        print(f"🔄 Админ {user_id} удалил {deleted_count} фейковых анкет")
         
     except Exception as e:
-        bot.reply_to(message, f"❌ Ошибка: {str(e)}")
+        bot.edit_message_text(
+            f"❌ *Ошибка при удалении:*\n```{str(e)}```",
+            chat_id=call.message.chat.id,
+            message_id=call.message.message_id,
+            parse_mode="Markdown"
+        )
+
+@bot.callback_query_handler(func=lambda call: call.data == "cancel_delete")
+def cancel_delete_callback(call: CallbackQuery):
+    """Отмена удаления"""
+    bot.edit_message_text(
+        "❌ *Удаление отменено*",
+        chat_id=call.message.chat.id,
+        message_id=call.message.message_id,
+        parse_mode="Markdown"
+    )
+    bot.answer_callback_query(call.id)
+
+    
+@bot.message_handler(content_types=['photo'])
+def get_photo_id(message):
+    photo_id = message.photo[-1].file_id
+    bot.send_message(message.chat.id, f"Photo ID: `{photo_id}`", parse_mode="Markdown")
 
 # Запуск бота
 if __name__ == "__main__":
