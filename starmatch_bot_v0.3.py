@@ -2922,7 +2922,10 @@ def fake_bulk_command(message: Message):
                 ]
 
 
-                bio = random.choice(bios)
+                if random.randint(1, 100) < 50:
+                    bio = random.choice(bios)
+                else:
+                    bio = ''
                 
                 # Генерируем дату рождения
                 current_year = datetime.now().year
