@@ -3118,6 +3118,35 @@ def get_photo_id(message):
     bot.send_message(message.chat.id, f"Photo ID: `{photo_id}`", parse_mode="Markdown")
 
 # Запуск бота
+import threading
+import time
+
+def db_maintenance():
+    """Периодическое обслуживание базы данных"""
+    while True:
+        time.sleep(3600)  # Каждый час
+        try:
+            print("🔄 Выполняю обслуживание БД...")
+            conn = db.get_connection()
+            cursor = conn.cursor()
+            
+            # Оптимизируем базу данных
+            cursor.execute("PRAGMA optimize")
+            cursor.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            
+            # Проверяем количество пользователей
+            cursor.execute("SELECT COUNT(*) FROM users")
+            user_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM users WHERE is_fake = 1")
+            fake_count = cursor.fetchone()[0]
+            
+            print(f"📊 Статус БД: {user_count} пользователей ({fake_count} фейков)")
+            
+        except Exception as e:
+            print(f"⚠️ Ошибка обслуживания БД: {e}")
+
+
 if __name__ == "__main__":
     # Настраиваем меню команд
     setup_bot_menu()
@@ -3140,4 +3169,9 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"  ⚠️ Ошибка подключения к базе данных: {e}")
     
-    bot.polling(none_stop=True)
+    maintenance_thread = threading.Thread(target=db_maintenance, daemon=True)
+    maintenance_thread.start()
+    
+    bot.add_custom_filter(StateFilter(bot))
+    bot.polling(none_stop=True, timeout=60)
+
