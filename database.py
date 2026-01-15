@@ -204,14 +204,16 @@ class Database:
     
     def get_fake_users_count(self):
         """Возвращает количество фейковых анкет"""
-        cursor = self.conn.cursor()
+        conn = self.get_connection()
+        cursor = conn.cursor()
         cursor.execute('SELECT COUNT(*) FROM users WHERE is_fake = 1')
         result = cursor.fetchone()
         return result[0] if result else 0
 
     def delete_all_fake_users(self):
         """Удаляет все фейковые анкеты"""
-        cursor = self.conn.cursor()
+        conn = self.get_connection()
+        cursor = conn.cursor()
         cursor.execute('DELETE FROM users WHERE is_fake = 1')
         self.conn.commit()
         return cursor.rowcount
