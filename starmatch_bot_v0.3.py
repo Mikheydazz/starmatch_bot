@@ -1328,7 +1328,7 @@ def require_subscription(func):
             return func(*args, **kwargs)
         
         # Проверяем подписку
-        if not check_channel_subscription(int(user_id)):
+        if not check_channel_subscription(int(user_id)) and CHANNEL_IS_NEEDED:
             keyboard = InlineKeyboardMarkup(row_width=1)
             keyboard.add(
                 InlineKeyboardButton("📢 Вступить в канал", url=CHANNEL_INVITE_LINK),
