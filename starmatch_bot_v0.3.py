@@ -24,7 +24,7 @@ logging.basicConfig(
 # Уменьшаем уровень логирования для telebot
 logging.getLogger('telebot').setLevel(logging.WARNING)
 
-TOKEN = "8539275112:AAFO2NYmGQY-VbDB1RREve1k1TGqURwoQxc"
+TOKEN = "8532351328:AAHzg51PtkeG8VNEN-QD3siT5O9vxTHx4-I"
 GROUP_ID = -1001928901997
 MECHANIC_PRICE = 5
 MATCH_PRICE = 0  # стоимость проверки совместимости
