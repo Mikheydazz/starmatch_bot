@@ -135,7 +135,37 @@ def myprofile_command(message: Message):
         f"❤️ *Взаимных симпатий:* {mutual_count}"
     )
     
-    if user_data.get('photo_id'):
+    # Пытаемся отправить локальное фото
+    photo_path = db.get_user_photo_path(user_id)
+    if photo_path:
+        try:
+            with open(photo_path, 'rb') as photo_file:
+                bot.send_photo(
+                    message.chat.id,
+                    photo_file,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+        except Exception as e:
+            print(f"Ошибка отправки локального фото профиля: {e}")
+            # Запасной вариант: используем photo_id
+            if user_data.get('photo_id'):
+                bot.send_photo(
+                    message.chat.id,
+                    user_data['photo_id'],
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            else:
+                bot.send_message(
+                    message.chat.id,
+                    caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+    elif user_data.get('photo_id'):
         bot.send_photo(
             message.chat.id,
             user_data['photo_id'],
@@ -150,6 +180,7 @@ def myprofile_command(message: Message):
             parse_mode="Markdown",
             reply_markup=keyboard
         )
+
 
 @bot.message_handler(commands=["browse"])
 def browse_command(message: Message):
@@ -767,13 +798,29 @@ def get_birthday(message: Message):
 def get_photo(message: Message):
     user_id = str(message.from_user.id)
     
-    # Сохраняем photo_id самой большой версии фото
+    # Получаем photo_id самой большой версии фото
     photo_id = message.photo[-1].file_id
+    
+    # Скачиваем фото для локального сохранения
+    try:
+        file_info = bot.get_file(photo_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # Сохраняем фото локально через базу данных
+        photo_path = db.save_user_photo(user_id, downloaded_file, photo_id)
+        
+        if photo_path:
+            print(f"✅ Фото сохранено локально: {photo_path}")
+        
+    except Exception as e:
+        print(f"⚠️ Не удалось сохранить фото локально: {e}")
+        photo_path = None
     
     with temp_data_lock:
         if user_id not in temp_data:
             temp_data[user_id] = {}
         temp_data[user_id]["photo_id"] = photo_id
+        temp_data[user_id]["photo_file"] = downloaded_file if 'downloaded_file' in locals() else None
     
     bot.send_message(
         message.chat.id,
@@ -986,7 +1033,7 @@ def complete_registration(user_id, chat_id):
             bot.send_message(chat_id, f"❌ Отсутствует поле {field}. Начните заново с /start")
             return
     
-    # Сохраняем пользователя в БД
+    # Сохраняем пользователя в БД с локальным фото
     if str(user_id)[:2] == '-9':
         is_fake = 1
     else:
@@ -998,6 +1045,7 @@ def complete_registration(user_id, chat_id):
         gender=user_temp_data["gender"],
         birthday=user_temp_data["birthday"],
         age=user_temp_data["age"],
+        photo_file=user_temp_data.get("photo_file"),  # Передаем байты фото
         photo_id=user_temp_data.get("photo_id"),
         bio=user_temp_data["bio"],
         zodiac=user_temp_data["zodiac"],
@@ -1018,6 +1066,9 @@ def complete_registration(user_id, chat_id):
     # Показываем успешную регистрацию
     city_text = user_temp_data.get('city', 'не указан')
     
+    # Получаем путь к локальной фото для отображения
+    photo_path = db.get_user_photo_path(user_id)
+    
     bot.send_message(
         chat_id,
         "🎉 *Регистрация завершена!*\n\n"
@@ -1026,7 +1077,8 @@ def complete_registration(user_id, chat_id):
         f"🎂 *Возраст:* {user_temp_data['age']} лет\n"
         f"🏙️ *Город:* {city_text}\n"
         f"♈ *Знак зодиака:* {user_temp_data['zodiac']}\n"
-        f"💰 *Баланс:* 3 монеты\n\n"
+        f"💰 *Баланс:* 3 монеты\n"
+        f"📸 *Фото:* {'✅ Сохранено' if photo_path else '❌ Нет фото'}\n\n"
         "Теперь вы можете смотреть анкеты других пользователей!",
         parse_mode="Markdown"
     )
@@ -1036,6 +1088,7 @@ def complete_registration(user_id, chat_id):
     
     # Сбрасываем состояние
     bot.delete_state(user_id, chat_id)
+
 
 def show_main_menu(user_id, chat_id=None):
     """Показывает главное меню"""
@@ -1150,7 +1203,37 @@ def show_mutual_profile(call: CallbackQuery):
     else:
         caption += "⚠️ *Нет взаимной симпатии*"
     
-    if target_data.get('photo_id'):
+    # Пытаемся отправить локальное фото
+    photo_path = db.get_user_photo_path(target_id)
+    if photo_path:
+        try:
+            with open(photo_path, 'rb') as photo_file:
+                bot.send_photo(
+                    call.message.chat.id,
+                    photo_file,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+        except Exception as e:
+            print(f"Ошибка отправки локального фото в mutual: {e}")
+            # Запасной вариант
+            if target_data.get('photo_id'):
+                bot.send_photo(
+                    call.message.chat.id,
+                    target_data['photo_id'],
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            else:
+                bot.send_message(
+                    call.message.chat.id,
+                    caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+    elif target_data.get('photo_id'):
         bot.send_photo(
             call.message.chat.id,
             target_data['photo_id'],
@@ -1576,22 +1659,58 @@ def display_profile(user_id, chat_id, profile_id, user_data, current_idx, total_
         f"📝 *О себе:*\n{user_data.get('bio', 'Не указано')}\n\n"
     )
     
+    # Получаем путь к локальной фотографии
+    photo_path = db.get_user_photo_path(profile_id)
+    
     # Всегда отправляем новое сообщение
-    if user_data.get('photo_id'):
-        msg = bot.send_photo(
-            chat_id,
-            user_data['photo_id'],
-            caption=caption,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
+    if photo_path:
+        try:
+            # Отправляем локальное фото
+            with open(photo_path, 'rb') as photo_file:
+                msg = bot.send_photo(
+                    chat_id,
+                    photo_file,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+        except Exception as e:
+            print(f"Ошибка отправки локального фото {photo_path}: {e}")
+            # Если локальное фото не найдено, пытаемся использовать photo_id из базы
+            photo_id = user_data.get('photo_id')
+            if photo_id:
+                msg = bot.send_photo(
+                    chat_id,
+                    photo_id,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
+            else:
+                msg = bot.send_message(
+                    chat_id,
+                    caption,
+                    parse_mode="Markdown",
+                    reply_markup=keyboard
+                )
     else:
-        msg = bot.send_message(
-            chat_id,
-            caption,
-            parse_mode="Markdown",
-            reply_markup=keyboard
-        )
+        # Используем photo_id из базы как запасной вариант
+        photo_id = user_data.get('photo_id')
+        if photo_id:
+            msg = bot.send_photo(
+                chat_id,
+                photo_id,
+                caption=caption,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
+        else:
+            msg = bot.send_message(
+                chat_id,
+                caption,
+                parse_mode="Markdown",
+                reply_markup=keyboard
+            )
     
     # Сохраняем ID последнего сообщения (но не удаляем предыдущие)
     with temp_data_lock:
@@ -2473,7 +2592,7 @@ def fake_command(message: Message):
     # Парсим команду
     try:
         # Парсим команду: /fake <имя> <пол> <возраст> <город> <био> [фото_url]
-        parts = message.text.split(maxsplit=6)  # Увеличиваем maxsplit для возможного URL фото
+        parts = message.text.split(maxsplit=6)
         
         if len(parts) < 6:
             bot.send_message(
@@ -2528,7 +2647,7 @@ def fake_command(message: Message):
         current_year = datetime.now().year
         birth_year = current_year - age
         birth_month = random.randint(1, 12)
-        birth_day = random.randint(1, 28)  # Безопасное значение для всех месяцев
+        birth_day = random.randint(1, 28)
         
         birthday = f"{birth_day:02d}.{birth_month:02d}.{birth_year}"
         
@@ -2542,39 +2661,31 @@ def fake_command(message: Message):
         while db.user_exists(fake_user_id):
             fake_user_id = f"-9{random.randint(10000000, 99999999)}"
         
-        # Обрабатываем фото, если указана ссылка
+        # Обрабатываем фото
+        photo_file_bytes = None
         photo_id = None
+        
         if photo_url:
             try:
-                # Отправляем сообщение о загрузке фото
-                status_msg = bot.send_message(message.chat.id, "🔄 Загружаю фотографию...")
-                
-                # Проверяем, валидная ли ссылка
-                if photo_url.startswith(('http://', 'https://')):
-                    # Загружаем фото по URL
-                    import requests
-                    from io import BytesIO
+                # Загружаем фото по URL
+                response = requests.get(photo_url, timeout=10)
+                if response.status_code == 200:
+                    photo_file_bytes = response.content
                     
-                    response = requests.get(photo_url, timeout=10)
-                    if response.status_code == 200:
-                        # Отправляем фото в чат, чтобы получить photo_id
-                        photo_data = BytesIO(response.content)
-                        photo_data.name = 'photo.jpg'
-                        
-                        sent_photo = bot.send_photo(message.chat.id, photo_data)
-                        photo_id = sent_photo.photo[-1].file_id if sent_photo.photo else None
-                        
-                        # Удаляем служебные сообщения
-                        try:
-                            bot.delete_message(message.chat.id, status_msg.message_id)
-                            bot.delete_message(message.chat.id, sent_photo.message_id)
-                        except:
-                            pass
-                    else:
-                        bot.send_message(message.chat.id, f"❌ Не удалось загрузить фото. Код ошибки: {response.status_code}")
-                        return
+                    # Отправляем фото в чат, чтобы получить photo_id для запасного варианта
+                    photo_data = BytesIO(photo_file_bytes)
+                    photo_data.name = 'photo.jpg'
+                    
+                    sent_photo = bot.send_photo(message.chat.id, photo_data)
+                    photo_id = sent_photo.photo[-1].file_id if sent_photo.photo else None
+                    
+                    # Удаляем служебное сообщение
+                    try:
+                        bot.delete_message(message.chat.id, sent_photo.message_id)
+                    except:
+                        pass
                 else:
-                    bot.send_message(message.chat.id, "❌ Неверный формат URL фотографии")
+                    bot.send_message(message.chat.id, f"❌ Не удалось загрузить фото. Код ошибки: {response.status_code}")
                     return
                     
             except Exception as e:
@@ -2582,50 +2693,51 @@ def fake_command(message: Message):
                 return
         
         # Если фото не указано, используем случайное фото по умолчанию
-        if not photo_id:
-            # Списки ID случайных фото (замените на реальные file_id из вашего бота)
-            default_photos = {
-            "Мужской": [
-                "AgACAgIAAxkBAAICBmlpBYyJ6wl8qot0EjoYERiRQdLlAAIdEGsbDrtJS55UJQ4fDF1tAQADAgADeAADOAQ",
-                "AgACAgIAAxkBAAICBGlpBXt6y-HCXTvHNPx6Pv6HHbCKAAIcEGsbDrtJS1FIdxkNmVFQAQADAgADeQADOAQ",
-            ],
-            "Женский": [
-                "AgACAgIAAxkBAAICCGlpBZ-ALRnL37FVmof6Q_9INqI9AAIeEGsbDrtJSxHBoGSCrfJsAQADAgADeQADOAQ",
-                "AgACAgIAAxkBAAICAmlpBVYqmVlYP1ITM-rTYSDWECQ3AAIbEGsbDrtJS_KF-rT8rL4AAQEAAwIAA3gAAzgE",
-            ]
+        if not photo_file_bytes:
+            # Списки путей к локальным фото-заглушкам
+            default_photos_local = {
+                "Мужской": ["default_male1.jpg", "default_male2.jpg"],
+                "Женский": ["default_female1.jpg", "default_female2.jpg"]
             }
             
-            # Выбираем случайное фото по полу
+            # Загружаем локальное фото-заглушку
             gender_key = gender
-            if gender_key in default_photos and default_photos[gender_key]:
-                photo_id = random.choice(default_photos[gender_key])
-            else:
-                # Если нет фото по умолчанию, используем нейтральное
-                photo_id = "AgACAgIAAxkBAAICAmlpBVYqmVlYP1ITM-rTYSDWECQ3AAIbEGsbDrtJS_KF-rT8rL4AAQEAAwIAA3gAAzgE"
+            if gender_key in default_photos_local:
+                photo_filename = random.choice(default_photos_local[gender_key])
+                photo_path = os.path.join("default_photos", photo_filename)
+                
+                if os.path.exists(photo_path):
+                    with open(photo_path, 'rb') as f:
+                        photo_file_bytes = f.read()
+                else:
+                    print(f"⚠️ Локальное фото-заглушка не найдено: {photo_path}")
         
-        # Создаем фейковый профиль в базе данных
+        # Создаем фейковый профиль в базе данных с локальным фото
         success = db.save_user(
             user_id=fake_user_id,
             name=name,
             gender=gender,
             birthday=birthday,
             age=age,
-            photo_id=photo_id,
+            photo_file=photo_file_bytes,  # Байты фото для локального сохранения
+            photo_id=photo_id,  # Telegram file_id как запасной вариант
             bio=bio,
             zodiac=zodiac,
             city=city,
-            is_fake=1,  # Отметка, что это фейковый профиль
-            balance=random.randint(0, 10)  # Случайный начальный баланс
+            is_fake=1,
+            balance=random.randint(0, 10)
         )
         
         if success:
-            # Отправляем подтверждение администратору с миниатюрой фото
-            try:
-                if photo_id:
-                    # Отправляем фото с информацией
+            # Получаем путь к сохраненному фото для отображения
+            saved_photo_path = db.get_user_photo_path(fake_user_id)
+            
+            # Отправляем подтверждение администратору
+            if saved_photo_path and os.path.exists(saved_photo_path):
+                with open(saved_photo_path, 'rb') as photo_file:
                     bot.send_photo(
                         message.chat.id,
-                        photo_id,
+                        photo_file,
                         caption=(
                             f"✅ *Фейковая анкета создана!*\n\n"
                             f"👤 *Имя:* {name}\n"
@@ -2636,30 +2748,13 @@ def fake_command(message: Message):
                             f"🏙️ *Город:* {city}\n"
                             f"📝 *О себе:* {bio}\n"
                             f"🆔 *ID:* `{fake_user_id}`\n"
-                            f"💰 *Баланс:* {random.randint(0, 10)} монет\n\n"
+                            f"💰 *Баланс:* {random.randint(0, 10)} монет\n"
+                            f"📸 *Фото:* ✅ Локально сохранено\n\n"
                             f"*Анкета будет доступна другим пользователям для просмотра.*"
                         ),
                         parse_mode="Markdown"
                     )
-                else:
-                    # Без фото
-                    bot.send_message(
-                        message.chat.id,
-                        f"✅ *Фейковая анкета создана!*\n\n"
-                        f"👤 *Имя:* {name}\n"
-                        f"⚧ *Пол:* {gender}\n"
-                        f"🎂 *Возраст:* {age} лет\n"
-                        f"📅 *ДР:* {birthday}\n"
-                        f"♈ *Знак зодиака:* {zodiac}\n"
-                        f"🏙️ *Город:* {city}\n"
-                        f"📝 *О себе:* {bio}\n"
-                        f"🆔 *ID:* `{fake_user_id}`\n"
-                        f"💰 *Баланс:* {random.randint(0, 10)} монет\n\n"
-                        f"*Анкета будет доступна другим пользователям для просмотра.*",
-                        parse_mode="Markdown"
-                    )
-            except Exception as e:
-                # Если не удалось отправить фото, отправляем текстовое сообщение
+            else:
                 bot.send_message(
                     message.chat.id,
                     f"✅ *Фейковая анкета создана!*\n\n"
@@ -2671,13 +2766,13 @@ def fake_command(message: Message):
                     f"🏙️ *Город:* {city}\n"
                     f"📝 *О себе:* {bio}\n"
                     f"🆔 *ID:* `{fake_user_id}`\n"
-                    f"💰 *Баланс:* {random.randint(0, 10)} монет\n\n"
-                    f"*Ошибка при отправке фото: {str(e)}*",
+                    f"💰 *Баланс:* {random.randint(0, 10)} монет\n"
+                    f"📸 *Фото:* {'✅ Telegram ID' if photo_id else '❌ Нет фото'}\n\n"
+                    f"*Анкета будет доступна другим пользователям для просмотра.*",
                     parse_mode="Markdown"
                 )
             
-            # Логируем создание фейка
-            print(f"🔄 Админ {user_id} создал фейковую анкету: {fake_user_id} ({name}) с фото")
+            print(f"🔄 Админ {user_id} создал фейковую анкету: {fake_user_id} ({name})")
             
         else:
             bot.send_message(message.chat.id, "❌ Ошибка при создании анкеты в базе данных")
@@ -2689,9 +2784,6 @@ def fake_command(message: Message):
             parse_mode="Markdown"
         )
         print(f"Ошибка в команде /fake: {e}")
-        import traceback
-        traceback.print_exc()
-
 @bot.message_handler(commands=["fake_bulk"])
 def fake_bulk_command(message: Message):
     """Создание нескольких фейковых анкет одной командой"""
@@ -3122,21 +3214,31 @@ if __name__ == "__main__":
     # Настраиваем меню команд
     setup_bot_menu()
     
+    # Очищаем потерянные фото при запуске
+    try:
+        orphaned_count = db.cleanup_orphaned_photos()
+        if orphaned_count > 0:
+            print(f"🧹 Очищено потерянных фото: {orphaned_count}")
+    except Exception as e:
+        print(f"⚠️ Ошибка при очистке фото: {e}")
+    
     bot.add_custom_filter(StateFilter(bot))
     
     print("🤖 Бот для знакомств запущен!")
     print("📁 Данные сохраняются в базе данных SQLite")
+    print("📸 Фотографии сохраняются локально в папке 'user_photos'")
     print("✨ Основные функции:")
-    print("  • Регистрация с фото и знаком зодиака")
+    print("  • Регистрация с локальным сохранением фото")
     print("  • Просмотр анкет с фильтрами")
     print("  • Проверка совместимости по Матрице Судьбы")
     print("  • Система лайков и взаимных симпатий")
-    print("  • Меню команд справа снизу на телефоне")
     
     # Проверяем, работает ли база данных
     try:
         user_count = db.get_user_count()
+        fake_count = db.get_fake_users_count()
         print(f"  • Пользователей в базе: {user_count}")
+        print(f"  • Фейковых анкет: {fake_count}")
     except Exception as e:
         print(f"  ⚠️ Ошибка подключения к базе данных: {e}")
     
